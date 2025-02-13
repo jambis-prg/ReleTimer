@@ -2,7 +2,7 @@
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 #include "pico/binary_info.h"
-
+#include "lcd.h"
 
 #define SW 29
 #define DT 28
@@ -13,6 +13,11 @@
 #define SW_DELAY_CURSOR 25
 #define SW_DELAY_RUN 1000
 
+typedef struct
+{
+    uint8_t hours, minutes, seconds;
+} Time;
+
 enum CursorType : uint8_t 
 {
      Seconds, 
@@ -22,7 +27,7 @@ enum CursorType : uint8_t
 };
 
 bool running = false;
-uint8_t hours, minutes, seconds;
+Time timer;
 uint32_t old_time;
 
 uint32_t next_value = GPIO_IRQ_EDGE_FALL;
@@ -33,237 +38,127 @@ CursorType cursor = Seconds;
 
 bool update_lcd = false;
 
-const int LCD_CLEARDISPLAY = 0x01;
-const int LCD_RETURNHOME = 0x02;
-const int LCD_ENTRYMODESET = 0x04;
-const int LCD_DISPLAYCONTROL = 0x08;
-const int LCD_CURSORSHIFT = 0x10;
-const int LCD_FUNCTIONSET = 0x20;
-const int LCD_SETCGRAMADDR = 0x40;
-const int LCD_SETDDRAMADDR = 0x80;
-
-// flags for display entry mode
-const int LCD_ENTRYSHIFTINCREMENT = 0x01;
-const int LCD_ENTRYLEFT = 0x02;
-
-// flags for display and cursor control
-const int LCD_BLINKON = 0x01;
-const int LCD_CURSORON = 0x02;
-const int LCD_DISPLAYON = 0x04;
-
-// flags for display and cursor shift
-const int LCD_MOVERIGHT = 0x04;
-const int LCD_DISPLAYMOVE = 0x08;
-
-// flags for function set
-const int LCD_5x10DOTS = 0x04;
-const int LCD_2LINE = 0x08;
-const int LCD_8BITMODE = 0x10;
-
-// flag for backlight control
-const int LCD_BACKLIGHT = 0x08;
-
-const int LCD_ENABLE_BIT = 0x04;
-
-// By default these LCD display drivers are on bus address 0x27
-static int addr = 0x27;
-
-// Modes for lcd_send_byte
-#define LCD_CHARACTER  1
-#define LCD_COMMAND    0
-
-#define MAX_LINES      2
-#define MAX_CHARS      16
-
 uint32_t millis()
 {
     return to_ms_since_boot(get_absolute_time());
 }
 
-void encoder_callback(uint gpio, uint32_t events)
+
+void inc_timer(Time *timer, CursorType cursor)
 {
-    if (gpio == SW && events != (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE))
+    switch (cursor)
     {
-        bool state = events == GPIO_IRQ_EDGE_FALL;
-
-        if (state && !old_state) tDown = millis();
-        else if (!state && old_state) tUp = millis();
-
-        uint32_t delta = tUp - tDown;
-        if (!state && old_state && delta > SW_DELAY_CURSOR)
-        {
-            if (delta > SW_DELAY_RUN)
-            {
-                if (running)
-                {
-                    seconds = old_time;
-                    minutes = old_time >> 8;
-                    hours = old_time >> 16;
-                }
-                else
-                    old_time = seconds + (minutes << 8) + (hours << 16);
-
-                running = !running;
-                update_lcd = true;
-                gpio_put(RELE, running);
-            }
-            else if (!running)
-            {
-                cursor = (CursorType)((cursor + 1) % CursorType::Count);
-                update_lcd = true;
-            }
-        }
-
-        old_state = state;
+    case Seconds:
+        timer->seconds++;
+        if (timer->seconds < 60)
+            break;
+        timer->seconds = 0;
+    case Minutes:
+        timer->minutes++;
+        if (timer->minutes < 60)
+            break;
+        minutes = 0;
+    case Hours:
+        timer->hours = (timer->hours + 1) % 24;
+        break;
+    default:
+        break;
     }
-    else if (!running && events != (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE))
+}
+
+void dec_timer(Time *timer, CursorType cursor)
+{
+    switch (cursor)
     {
-        if (gpio == CLK && events == next_value)
+    case Seconds:
+        timer->seconds--;
+        if (timer->seconds < 60)
+            break;
+        timer->seconds = 59;
+    case Minutes:
+        timer->minutes--;
+        if (timer->minutes < 60)
+            break;
+        timer->minutes = 59;
+    case Hours:
+        timer->hours = timer->hours > 0 ? timer->hours - 1 : 23;
+        break;
+    default:
+        break;
+    }
+}
+
+
+void sw_handler(bool state)
+{
+    if (state && !old_state) tDown = millis();
+    else if (!state && old_state) tUp = millis();
+
+    uint32_t delta = tUp - tDown;
+    if (!state && old_state && delta > SW_DELAY_CURSOR)
+    {
+        if (delta > SW_DELAY_RUN)
         {
-            next_value = next_value ^ (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE);
-
-            if (cursor == Seconds)
+            if (running)
             {
-                seconds++;
-                if (seconds >= 60)
-                {
-                    seconds = 0;
-                    minutes++;
-
-                    if (minutes >= 60)
-                    {
-                        hours = (hours + 1) % 24;
-                        minutes = 0;
-                    }
-                }
-            }
-            else if (cursor == Minutes)
-            {
-                minutes++;
-
-                if (minutes >= 60)
-                {
-                    hours = (hours + 1) % 24;
-                    minutes = 0;
-                }
-            }
-            else hours = (hours + 1) % 24;
-
-            printf("%d:%d:%d\n", hours, minutes, seconds);
-            update_lcd = true;
-        }
-        else if (gpio == DT && events == next_value)
-        {
-            next_value = next_value ^ (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE);
-
-            if (cursor == Seconds)
-            {
-                seconds--;
-
-                if (seconds >= 60)
-                {
-                    if (hours != 0 || minutes != 0)
-                    {
-                        seconds = 59;
-                        minutes--;
-
-                        if (minutes >= 60)
-                        {
-                            hours = hours > 0 ? hours - 1 : 0;
-                            minutes = 59;
-                        }
-                    }
-                    else
-                        seconds = 0;
-                }
-            }
-            else if (cursor == Minutes)
-            {
-                minutes--;
-
-                if (minutes >= 60)
-                {
-                    if (hours != 0)
-                    {
-                        hours = hours > 0 ? hours - 1 : 0;
-                        minutes = 59;
-                    }
-                    else
-                        minutes = 0;
-                }
+                timer.seconds = old_time;
+                timer.minutes = old_time >> 8;
+                timer.hours = old_time >> 16;
             }
             else
-                hours = hours > 0 ? hours - 1 : 0;
-            update_lcd = true;
+                old_time = timer.seconds + (timer.minutes << 8) + (timer.hours << 16);
 
-            printf("%d:%d:%d\n", hours, minutes, seconds);
+            running = !running;
+            update_lcd = true;
+            gpio_put(RELE, running);
         }
+        else if (!running)
+        {
+            cursor = (CursorType)((cursor + 1) % CursorType::Count);
+            update_lcd = true;
+        }
+    }
+
+    old_state = state;
+}
+
+void rot_handler(uint gpio, uint32_t events)
+{
+    if (gpio == CLK && events == next_value)
+    {
+        next_value = next_value ^ (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE);
+
+        inc_timer(&timer, cursor);
+
+        printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
+        update_lcd = true;
+    }
+    else if (gpio == DT && events == next_value)
+    {
+        next_value = next_value ^ (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE);
+
+        dec_timer(&timer, cursor);
+
+        update_lcd = true;
+
+        printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
     }
 }
 
-/* Quick helper function for single byte transfers */
-void i2c_write_byte(uint8_t val) {
-#ifdef i2c_default
-    i2c_write_blocking(i2c0, addr, &val, 1, false);
-#endif
+void encoder_callback(uint gpio, uint32_t events)
+{
+    if (events != (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE))
+    {
+        if(gpio == SW)
+            sw_handler(events == GPIO_IRQ_EDGE_FALL);
+        else if (!running)
+            rot_handler(gpio, events);
+    }
 }
 
-void lcd_toggle_enable(uint8_t val) {
-    // Toggle enable pin on LCD display
-    // We cannot do this too quickly or things don't work
-#define DELAY_US 600
-    sleep_us(DELAY_US);
-    i2c_write_byte(val | LCD_ENABLE_BIT);
-    sleep_us(DELAY_US);
-    i2c_write_byte(val & ~LCD_ENABLE_BIT);
-    sleep_us(DELAY_US);
-}
 
-// The display is sent a byte as two separate nibble transfers
-void lcd_send_byte(uint8_t val, int mode) {
-    uint8_t high = mode | (val & 0xF0) | LCD_BACKLIGHT;
-    uint8_t low = mode | ((val << 4) & 0xF0) | LCD_BACKLIGHT;
-
-    i2c_write_byte(high);
-    lcd_toggle_enable(high);
-    i2c_write_byte(low);
-    lcd_toggle_enable(low);
-}
-
-void lcd_clear(void) {
-    lcd_send_byte(LCD_CLEARDISPLAY, LCD_COMMAND);
-}
-
-// go to location on LCD
-void lcd_set_cursor(int line, int position) {
-    int val = (line == 0) ? 0x80 + position : 0xC0 + position;
-    lcd_send_byte(val, LCD_COMMAND);
-}
-
-static inline void lcd_char(char val) {
-    lcd_send_byte(val, LCD_CHARACTER);
-}
-
-void lcd_string(const char *s) {
-    while (*s)
-        lcd_char(*s++);
-}
-
-void lcd_init() {
-    lcd_send_byte(0x03, LCD_COMMAND);
-    lcd_send_byte(0x03, LCD_COMMAND);
-    lcd_send_byte(0x03, LCD_COMMAND);
-    lcd_send_byte(0x02, LCD_COMMAND);
-
-    lcd_send_byte(LCD_ENTRYMODESET | LCD_ENTRYLEFT, LCD_COMMAND);
-    lcd_send_byte(LCD_FUNCTIONSET | LCD_2LINE, LCD_COMMAND);
-    lcd_send_byte(LCD_DISPLAYCONTROL | LCD_DISPLAYON | LCD_CURSORON, LCD_COMMAND);
-    lcd_clear();
-}
-
-int main() {
-    stdio_init_all(); // Inicializa a comunicação USB
-
+void init_gpios()
+{
     gpio_init(RELE);
     gpio_set_dir(RELE, GPIO_OUT);
     gpio_put(RELE, false);
@@ -284,6 +179,12 @@ int main() {
     gpio_set_irq_enabled_with_callback(SW, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, encoder_callback);
     gpio_set_irq_enabled_with_callback(DT, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, encoder_callback);
     gpio_set_irq_enabled_with_callback(CLK, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, encoder_callback);
+}
+
+int main() {
+    stdio_init_all(); // Inicializa a comunicação USB
+
+    init_gpios();
 
     i2c_init(i2c0, 100 * 1000);
     gpio_set_function(0, GPIO_FUNC_I2C);
@@ -294,7 +195,6 @@ int main() {
     bi_decl(bi_2pins_with_func(0, 1, GPIO_FUNC_I2C));
 
     lcd_init();
-
     lcd_clear();
     lcd_string("00:00:00");
     lcd_set_cursor(0, 7);
@@ -317,38 +217,26 @@ int main() {
             {
                 update_lcd = true;
                 accum -= 1000;
-                seconds -= 1;
-                if (seconds >= 60)
+
+                if (timer.hours == 0 && timer.minutes == 0 && timer.seconds == 1)
                 {
-                    if ((hours != 0 || minutes != 0))
-                    {
-                        seconds = 59;
-                        minutes--;
-
-                        if (minutes >= 60)
-                        {
-                            hours = hours > 0 ? hours - 1 : 0;
-                            minutes = 59;
-                        }
-                    }
-                    else
-                    {
-                        seconds = old_time;
-                        minutes = old_time >> 8;
-                        hours = old_time >> 16;
-                        running = false;
-                        gpio_put(RELE, false);
-                    }
+                    timer.seconds = old_time;
+                    timer.minutes = old_time >> 8;
+                    timer.hours = old_time >> 16;
+                    running = false;
+                    gpio_put(RELE, false);
                 }
+                else
+                    dec_timer(&timer, Seconds);
 
-                printf("%d:%d:%d\n", hours, minutes, seconds);
+                printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
             }
         }
         
         if (update_lcd)
         {
             lcd_clear();
-            sprintf(buffer, "%02d:%02d:%02d", hours, minutes, seconds);
+            sprintf(buffer, "%02d:%02d:%02d", timer.hours, timer.minutes, timer.seconds);
             lcd_string(buffer);
             switch (cursor)
             {

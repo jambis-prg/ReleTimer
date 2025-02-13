@@ -12,6 +12,7 @@ pico_sdk_init()
 
 add_executable(SwitchTimer
     src/main.cpp
+    src/lcd.cpp
 )
 
 # Add pico_stdlib library which aggregates commonly used features
