@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
-#include "hardware/i2c.h"
 #include "pico/binary_info.h"
+#include "hardware/i2c.h"
 #include "lcd.h"
 
 #define SW 29
@@ -57,7 +57,7 @@ void inc_timer(Time *timer, CursorType cursor)
         timer->minutes++;
         if (timer->minutes < 60)
             break;
-        minutes = 0;
+        timer->minutes = 0;
     case Hours:
         timer->hours = (timer->hours + 1) % 24;
         break;
@@ -88,6 +88,7 @@ void dec_timer(Time *timer, CursorType cursor)
     }
 }
 
+bool reset = false;
 
 void sw_handler(bool state)
 {
@@ -99,20 +100,31 @@ void sw_handler(bool state)
     {
         if (delta > SW_DELAY_RUN)
         {
-            if (running)
+            if ((timer.hours + timer.minutes + timer.seconds) != 0)
             {
-                timer.seconds = old_time;
-                timer.minutes = old_time >> 8;
-                timer.hours = old_time >> 16;
-            }
-            else
-                old_time = timer.seconds + (timer.minutes << 8) + (timer.hours << 16);
+                if (running)
+                {
+                    timer.seconds = old_time;
+                    timer.minutes = old_time >> 8;
+                    timer.hours = old_time >> 16;
+                }
+                else
+                    old_time = timer.seconds + (timer.minutes << 8) + (timer.hours << 16);
 
-            running = !running;
-            update_lcd = true;
-            gpio_put(RELE, running);
+                running = !running;
+                update_lcd = true;
+                gpio_put(RELE, running);
+            }
         }
-        else if (!running)
+        else if (running)
+        {
+            timer.seconds = old_time;
+            timer.minutes = old_time >> 8;
+            timer.hours = old_time >> 16;
+            update_lcd = true;
+            reset = true;
+        }
+        else
         {
             cursor = (CursorType)((cursor + 1) % CursorType::Count);
             update_lcd = true;
@@ -122,26 +134,38 @@ void sw_handler(bool state)
     old_state = state;
 }
 
+int a = 1;
+int b = 1;
+
 void rot_handler(uint gpio, uint32_t events)
 {
     if (gpio == CLK && events == next_value)
     {
+        a = (next_value == GPIO_IRQ_EDGE_FALL) ? 0 : 1;
+
         next_value = next_value ^ (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE);
 
-        inc_timer(&timer, cursor);
+        if (a != b)
+        {
+            inc_timer(&timer, cursor);
+            printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
+            update_lcd = true;
+        }
 
-        printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
-        update_lcd = true;
     }
     else if (gpio == DT && events == next_value)
     {
+        b = (next_value == GPIO_IRQ_EDGE_FALL) ? 0 : 1;
+        
         next_value = next_value ^ (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE);
 
-        dec_timer(&timer, cursor);
+        if (a != b)
+        {
+            dec_timer(&timer, cursor);
+            printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
+            update_lcd = true;
+        }
 
-        update_lcd = true;
-
-        printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
     }
 }
 
@@ -210,6 +234,12 @@ int main() {
 
         if (running)
         {
+            if (reset)
+            {
+                accum = 0;
+                reset = false;
+            }
+
             accum += delta;
 
 

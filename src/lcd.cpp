@@ -1,11 +1,10 @@
 #include "lcd.h"
+#include "hardware/i2c.h"
 
 /* Quick helper function for single byte transfers */
 void i2c_write_byte(uint8_t val) 
 {
-#ifdef i2c_default
-    i2c_write_blocking(i2c0, addr, &val, 1, false);
-#endif
+    i2c_write_blocking(i2c0, LCD_ADDR, &val, 1, false);
 }
 
 void lcd_toggle_enable(uint8_t val) 
