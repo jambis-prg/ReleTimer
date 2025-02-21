@@ -9,6 +9,7 @@
 #define CLK 27
 
 #define RELE 2
+#define BUZZER 13
 
 #define SW_DELAY_CURSOR 25
 #define SW_DELAY_RUN 1000
@@ -114,6 +115,7 @@ void sw_handler(bool state)
                 running = !running;
                 update_lcd = true;
                 gpio_put(RELE, running);
+                gpio_put(BUZZER, false);
             }
         }
         else if (running)
@@ -187,6 +189,10 @@ void init_gpios()
     gpio_set_dir(RELE, GPIO_OUT);
     gpio_put(RELE, false);
 
+    gpio_init(BUZZER);
+    gpio_set_dir(BUZZER, GPIO_OUT);
+    gpio_put(BUZZER, false);
+
     gpio_init(SW);
     gpio_init(DT);
     gpio_init(CLK);
@@ -224,7 +230,8 @@ int main() {
     lcd_set_cursor(0, 7);
 
     uint32_t start = millis();
-    uint16_t accum = 0;
+    uint16_t accum = 0, beep_accum = 0;
+    bool beeping = false;
     char buffer[10];
     while (true) 
     {
@@ -236,11 +243,32 @@ int main() {
         {
             if (reset)
             {
-                accum = 0;
+                gpio_put(BUZZER, false);
+                accum = beep_accum = 0;
+                beeping = false;
                 reset = false;
             }
 
             accum += delta;
+
+            if (timer.hours == 0 && timer.minutes == 0)
+            {
+                beep_accum += delta;
+
+                if (!beeping && beep_accum >= 5000)
+                {
+                    gpio_put(BUZZER, true);
+                    beeping = true;
+                    beep_accum -= 5000;
+                }
+                else if (beeping && beep_accum >= 500)
+                {
+                    gpio_put(BUZZER, false);
+                    beeping = false;
+                    beep_accum -= 500;
+                }
+
+            }
 
 
             if (accum >= 1000)
@@ -255,12 +283,20 @@ int main() {
                     timer.hours = old_time >> 16;
                     running = false;
                     gpio_put(RELE, false);
+                    gpio_put(BUZZER, false);
+                    accum = beep_accum = 0;
+                    beeping = false;
                 }
                 else
                     dec_timer(&timer, Seconds);
 
                 printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
             }
+        }
+        else
+        {
+            accum = beep_accum = 0;
+            beeping = false;
         }
         
         if (update_lcd)
