@@ -14,80 +14,30 @@
 #define SW_DELAY_CURSOR 25
 #define SW_DELAY_RUN 1000
 
-typedef struct
-{
-    uint8_t hours, minutes, seconds;
-} Time;
-
-enum CursorType : uint8_t 
-{
-     Seconds, 
-     Minutes, 
-     Hours,
-     Count
-};
+#define DAY 86400000
+#define HOUR 3600000
+#define MINUTE 60000
+#define SECOND 1000
 
 bool running = false;
-Time timer;
-uint32_t old_time;
-
 uint32_t next_value = GPIO_IRQ_EDGE_FALL;
 
 bool old_state = true;
 uint32_t tDown = 0, tUp = 0;
-CursorType cursor = Seconds;
+
+bool gate_a = true;
+bool gate_b = true;
 
 bool update_lcd = false;
+
+uint32_t timer_uint = 0, old_timer_uint = 0;
+uint32_t timer_incrementer = 1000;
 
 uint32_t millis()
 {
     return to_ms_since_boot(get_absolute_time());
 }
 
-
-void inc_timer(Time *timer, CursorType cursor)
-{
-    switch (cursor)
-    {
-    case Seconds:
-        timer->seconds++;
-        if (timer->seconds < 60)
-            break;
-        timer->seconds = 0;
-    case Minutes:
-        timer->minutes++;
-        if (timer->minutes < 60)
-            break;
-        timer->minutes = 0;
-    case Hours:
-        timer->hours = (timer->hours + 1) % 24;
-        break;
-    default:
-        break;
-    }
-}
-
-void dec_timer(Time *timer, CursorType cursor)
-{
-    switch (cursor)
-    {
-    case Seconds:
-        timer->seconds--;
-        if (timer->seconds < 60)
-            break;
-        timer->seconds = 59;
-    case Minutes:
-        timer->minutes--;
-        if (timer->minutes < 60)
-            break;
-        timer->minutes = 59;
-    case Hours:
-        timer->hours = timer->hours > 0 ? timer->hours - 1 : 23;
-        break;
-    default:
-        break;
-    }
-}
 
 bool reset = false;
 
@@ -99,36 +49,25 @@ void sw_handler(bool state)
     uint32_t delta = tUp - tDown;
     if (!state && old_state && delta > SW_DELAY_CURSOR)
     {
-        if (delta > SW_DELAY_RUN)
+        if (delta > SW_DELAY_RUN && timer_uint != 0)
         {
-            if ((timer.hours + timer.minutes + timer.seconds) != 0)
-            {
-                if (running)
-                {
-                    timer.seconds = old_time;
-                    timer.minutes = old_time >> 8;
-                    timer.hours = old_time >> 16;
-                }
-                else
-                    old_time = timer.seconds + (timer.minutes << 8) + (timer.hours << 16);
+            if (running) timer_uint = old_timer_uint;
+            else old_timer_uint = timer_uint;
 
-                running = !running;
-                update_lcd = true;
-                gpio_put(RELE, running);
-                gpio_put(BUZZER, false);
-            }
+            running = !running;
+            update_lcd = true;
+            gpio_put(RELE, running);
+            gpio_put(BUZZER, false);
         }
         else if (running)
         {
-            timer.seconds = old_time;
-            timer.minutes = old_time >> 8;
-            timer.hours = old_time >> 16;
+            timer_uint = old_timer_uint;
             update_lcd = true;
             reset = true;
         }
         else
         {
-            cursor = (CursorType)((cursor + 1) % CursorType::Count);
+            timer_incrementer = timer_incrementer == 3600000 ? 1000 : timer_incrementer * 60;
             update_lcd = true;
         }
     }
@@ -136,38 +75,38 @@ void sw_handler(bool state)
     old_state = state;
 }
 
-int a = 1;
-int b = 1;
+
 
 void rot_handler(uint gpio, uint32_t events)
 {
     if (gpio == CLK && events == next_value)
     {
-        a = (next_value == GPIO_IRQ_EDGE_FALL) ? 0 : 1;
+        gate_a = (next_value != GPIO_IRQ_EDGE_FALL);
 
         next_value = next_value ^ (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE);
 
-        if (a != b)
+        if (gate_a != gate_b)
         {
-            inc_timer(&timer, cursor);
-            printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
+            timer_uint = timer_uint + timer_incrementer;
+            if (timer_uint >= DAY)
+                timer_uint = DAY - 1;
             update_lcd = true;
         }
-
     }
     else if (gpio == DT && events == next_value)
     {
-        b = (next_value == GPIO_IRQ_EDGE_FALL) ? 0 : 1;
+        gate_b = (next_value != GPIO_IRQ_EDGE_FALL);
         
         next_value = next_value ^ (GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE);
 
-        if (a != b)
+        if (gate_a != gate_b)
         {
-            dec_timer(&timer, cursor);
-            printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
+            timer_uint -= timer_incrementer;
+            // Overflow
+            if (timer_uint >= DAY)
+                timer_uint = 0;
             update_lcd = true;
         }
-
     }
 }
 
@@ -241,56 +180,52 @@ int main() {
 
         if (running)
         {
-            if (reset)
+            timer_uint -= delta;
+
+            if (timer_uint >= DAY)
             {
+                timer_uint = old_timer_uint;
+                running = false;
+                gpio_put(RELE, false);
                 gpio_put(BUZZER, false);
                 accum = beep_accum = 0;
                 beeping = false;
-                reset = false;
-            }
-
-            accum += delta;
-
-            if (timer.hours == 0 && timer.minutes == 0)
-            {
-                beep_accum += delta;
-
-                if (!beeping && beep_accum >= 5000)
-                {
-                    gpio_put(BUZZER, true);
-                    beeping = true;
-                    beep_accum -= 5000;
-                }
-                else if (beeping && beep_accum >= 500)
-                {
-                    gpio_put(BUZZER, false);
-                    beeping = false;
-                    beep_accum -= 500;
-                }
-
-            }
-
-
-            if (accum >= 1000)
-            {
                 update_lcd = true;
-                accum -= 1000;
-
-                if (timer.hours == 0 && timer.minutes == 0 && timer.seconds == 1)
+            }
+            else
+            {
+                accum += delta;
+                if (accum >= 1000)
                 {
-                    timer.seconds = old_time;
-                    timer.minutes = old_time >> 8;
-                    timer.hours = old_time >> 16;
-                    running = false;
-                    gpio_put(RELE, false);
+                    update_lcd = true;
+                    accum -= 1000;
+                }
+
+                if (reset)
+                {
                     gpio_put(BUZZER, false);
                     accum = beep_accum = 0;
                     beeping = false;
+                    reset = false;
                 }
-                else
-                    dec_timer(&timer, Seconds);
 
-                printf("%02d:%02d:%02d\n", timer.hours, timer.minutes, timer.seconds);
+                if (timer_uint < MINUTE)
+                {
+                    beep_accum += delta;
+
+                    if (!beeping && beep_accum >= 5000)
+                    {
+                        gpio_put(BUZZER, true);
+                        beeping = true;
+                        beep_accum -= 5000;
+                    }
+                    else if (beeping && beep_accum >= 500)
+                    {
+                        gpio_put(BUZZER, false);
+                        beeping = false;
+                        beep_accum -= 500;
+                    }
+                }
             }
         }
         else
@@ -301,23 +236,23 @@ int main() {
         
         if (update_lcd)
         {
+            // Se otimizado pelo compialdor tem custo igual a criar uma var
+            // Temporária contendo timer_uint % 3600000
+            uint8_t hours = timer_uint / 3600000;
+            uint8_t minutes = (timer_uint % 3600000) / 60000;
+            uint8_t seconds = ((timer_uint % 3600000) % 60000) / 1000;
+            
             lcd_clear();
-            sprintf(buffer, "%02d:%02d:%02d", timer.hours, timer.minutes, timer.seconds);
+            sprintf(buffer, "%02d:%02d:%02d", hours, minutes, seconds);
             lcd_string(buffer);
-            switch (cursor)
-            {
-            case Seconds:
+
+            if (timer_incrementer <= 1000)
                 lcd_set_cursor(0, 7);
-                break;
-            case Minutes:
+            else if (timer_incrementer <= 60000)
                 lcd_set_cursor(0, 4);
-                break;
-            case Hours:
+            else
                 lcd_set_cursor(0, 1);
-                break;
-            default:
-                break;
-            }
+
             update_lcd = false;
         }
     }
