@@ -1,11 +1,12 @@
 #pragma once
 
 #include <stdint.h>
+#include "hardware/i2c.h"
 
-void ssd1306_init(uint8_t width, uint8_t height, uint8_t scl, uint8_t sda, uint8_t I2C_PORT);
+#define UPDATE_SECONDS 0x01
+#define UPDATE_MINUTES 0x02
+#define UPDATE_HOURS 0x04
+
+void ssd1306_init();
 void ssd1306_power(bool on);
-void ssd1306_contrast(uint8_t contrast);
-void ssd1306_invert(uint8_t invert);
-void ssd1306_rotate(uint8_t rotate);
-void ssd1306_clear();
-void ssd1306_show();
+void ssd1306_update_timer(uint32_t timer, uint8_t update_flags);
