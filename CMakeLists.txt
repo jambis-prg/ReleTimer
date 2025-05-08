@@ -35,7 +35,7 @@ pico_sdk_init()
 
 add_executable(ReleTimer
     src/main.cpp
-    src/lcd.cpp
+    src/ssd1306.cpp
 )
 
 # Add pico_stdlib library which aggregates commonly used features

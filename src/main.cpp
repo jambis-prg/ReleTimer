@@ -1,8 +1,6 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
-#include "pico/binary_info.h"
-#include "hardware/i2c.h"
-#include "lcd.h"
+#include "ssd1306.h"
 
 #define SW 29
 #define DT 28
@@ -14,10 +12,10 @@
 #define SW_DELAY_CURSOR 25
 #define SW_DELAY_RUN 1000
 
-#define DAY 86400000
-#define HOUR 3600000
-#define MINUTE 60000
-#define SECOND 1000
+#define DAY 86400
+#define HOUR 3600
+#define MINUTE 60
+#define SECOND 1
 
 bool running = false;
 uint32_t next_value = GPIO_IRQ_EDGE_FALL;
@@ -31,15 +29,15 @@ bool gate_b = true;
 bool update_lcd = false;
 
 uint32_t timer_uint = 0, old_timer_uint = 0;
-uint32_t timer_incrementer = 1000;
+uint16_t timer_incrementer = 1;
+uint8_t selected = INVERT_SECONDS;
+
+bool reset = false;
 
 uint32_t millis()
 {
     return to_ms_since_boot(get_absolute_time());
 }
-
-
-bool reset = false;
 
 void sw_handler(bool state)
 {
@@ -67,8 +65,9 @@ void sw_handler(bool state)
         }
         else
         {
-            timer_incrementer = timer_incrementer == 3600000 ? 1000 : timer_incrementer * 60;
+            timer_incrementer = timer_incrementer == 3600 ? 1 : timer_incrementer * 60;
             update_lcd = true;
+            selected = selected >= INVERT_HOURS ? INVERT_SECONDS : selected << 1;
         }
     }
 
@@ -155,23 +154,12 @@ int main() {
 
     init_gpios();
 
-    i2c_init(i2c0, 100 * 1000);
-    gpio_set_function(0, GPIO_FUNC_I2C);
-    gpio_set_function(1, GPIO_FUNC_I2C);
-    gpio_pull_up(0);
-    gpio_pull_up(1);
-    // Make the I2C pins available to picotool
-    bi_decl(bi_2pins_with_func(0, 1, GPIO_FUNC_I2C));
-
-    lcd_init();
-    lcd_clear();
-    lcd_string("00:00:00");
-    lcd_set_cursor(0, 7);
+    ssd1306_init();
+    ssd1306_update_timer(0, selected);
 
     uint32_t start = millis();
     uint16_t accum = 0, beep_accum = 0;
     bool beeping = false;
-    char buffer[10];
     while (true) 
     {
         uint32_t end = millis();
@@ -180,8 +168,6 @@ int main() {
 
         if (running)
         {
-            timer_uint -= delta;
-
             if (timer_uint >= DAY)
             {
                 timer_uint = old_timer_uint;
@@ -199,6 +185,7 @@ int main() {
                 {
                     update_lcd = true;
                     accum -= 1000;
+                    timer_uint--;
                 }
 
                 if (reset)
@@ -236,23 +223,7 @@ int main() {
         
         if (update_lcd)
         {
-            // Se otimizado pelo compialdor tem custo igual a criar uma var
-            // Temporária contendo timer_uint % 3600000
-            uint8_t hours = timer_uint / 3600000;
-            uint8_t minutes = (timer_uint % 3600000) / 60000;
-            uint8_t seconds = ((timer_uint % 3600000) % 60000) / 1000;
-            
-            lcd_clear();
-            sprintf(buffer, "%02d:%02d:%02d", hours, minutes, seconds);
-            lcd_string(buffer);
-
-            if (timer_incrementer <= 1000)
-                lcd_set_cursor(0, 7);
-            else if (timer_incrementer <= 60000)
-                lcd_set_cursor(0, 4);
-            else
-                lcd_set_cursor(0, 1);
-
+            ssd1306_update_timer(timer_uint, selected);
             update_lcd = false;
         }
     }
